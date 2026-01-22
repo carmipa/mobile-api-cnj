@@ -1,6 +1,10 @@
 # 📱 Mobile API CNJ
 ## Aplicativo Mobile para Consulta de Processos Judiciais do CNJ
 
+p align="center">
+  <img alt="Legal processual Consulta Movel" src="./icon.png" width="300">
+</p>
+
 <div align="center">
 
 [![React Native](https://img.shields.io/badge/React%20Native-0.76.9-61DAFB?style=flat-square&logo=react&logoColor=white)](https://reactnative.dev/)
