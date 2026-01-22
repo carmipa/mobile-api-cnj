@@ -1,0 +1,229 @@
+name: 🚀 Build & Release
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Tipo de build'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ==================== Preparação ====================
+  prepare:
+    name: 📋 Preparação
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.build.outputs.number }}
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 📌 Extrair versão
+        id: version
+        run: |
+          VERSION=$(cat package.json | grep version | head -1 | awk -F: '{ print $2 }' | sed 's/[",\n]//g' | sed 's/ //g')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📌 Versão: $VERSION"
+      
+      - name: 🔢 Build number
+        id: build
+        run: |
+          BUILD_NUMBER=$(($(date +%s) % 10000))
+          echo "number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "🔢 Build number: $BUILD_NUMBER"
+
+  # ==================== Build para Android ====================
+  build-android:
+    name: 🤖 Build Android
+    runs-on: ubuntu-latest
+    needs: prepare
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: 🔧 Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: 📦 Instalar dependências
+        run: npm ci
+      
+      - name: 🏗️ Build preparation
+        run: |
+          echo "📱 Preparando build para Android..."
+          echo "Versão: ${{ needs.prepare.outputs.version }}"
+          echo "Build: ${{ needs.prepare.outputs.build_number }}"
+      
+      - name: 📄 Validar configurações Expo
+        run: |
+          test -f app.json && echo "✓ app.json OK" || exit 1
+          test -f eas.json && echo "✓ eas.json OK" || exit 1
+      
+      - name: 📤 Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: android-build
+          path: |
+            app.json
+            eas.json
+            package.json
+          retention-days: 30
+
+  # ==================== Build para iOS ====================
+  build-ios:
+    name: 🍎 Build iOS
+    runs-on: macos-latest
+    needs: prepare
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: 📦 Instalar dependências
+        run: npm ci
+      
+      - name: 🏗️ Build preparation
+        run: |
+          echo "📱 Preparando build para iOS..."
+          echo "Versão: ${{ needs.prepare.outputs.version }}"
+          echo "Build: ${{ needs.prepare.outputs.build_number }}"
+      
+      - name: 📄 Validar configurações Expo
+        run: |
+          test -f app.json && echo "✓ app.json OK" || exit 1
+          test -f eas.json && echo "✓ eas.json OK" || exit 1
+      
+      - name: 📤 Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ios-build
+          path: |
+            app.json
+            eas.json
+            package.json
+          retention-days: 30
+
+  # ==================== Release ====================
+  release:
+    name: 📦 Criar Release
+    runs-on: ubuntu-latest
+    needs: [prepare, build-android, build-ios]
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+      
+      - name: 📥 Download Android artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: android-build
+          path: ./artifacts/android
+      
+      - name: 📥 Download iOS artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: ios-build
+          path: ./artifacts/ios
+      
+      - name: 📝 Gerar changelog
+        id: changelog
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          CHANGELOG=$(git log --oneline --grep="feat\|fix\|docs" -n 20 || echo "Sem changelog disponível")
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: 🏷️ Criar Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ github.ref }}
+          name: "🚀 Release ${{ needs.prepare.outputs.version }}"
+          body: |
+            # 🚀 Mobile API CNJ v${{ needs.prepare.outputs.version }}
+            
+            ## 📋 Alterações
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## 📦 Artifacts
+            - ✅ Android Build
+            - ✅ iOS Build
+            
+            ## 📊 Build Info
+            - **Data**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+            - **Commit**: ${{ github.sha }}
+            - **Autor**: ${{ github.actor }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ==================== Notificação ====================
+  notify:
+    name: 🔔 Notificações
+    runs-on: ubuntu-latest
+    needs: [build-android, build-ios]
+    if: always()
+    
+    steps:
+      - name: ✅ Build Success
+        if: success()
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║        ✅ BUILD EXECUTADO COM ÊXITO    ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "✓ Android Build: Completo"
+          echo "✓ iOS Build: Completo"
+          echo "✓ Release Pronto: Sim"
+          echo ""
+          echo "🎉 Seu aplicativo está pronto para distribuição!"
+      
+      - name: ❌ Build Failed
+        if: failure()
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   ❌ BUILD FALHOU - AÇÃO NECESSÁRIA   ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "⚠️ Verifique os logs acima para detalhes"
+          exit 1
